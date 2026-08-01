@@ -1,62 +1,61 @@
-from fastapi import FastAPI, HTTPException
+import uuid
+import asyncio
+from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import List
 
-from models import ResearchRequest, ResearchResponse, SourceDisplay
-from services import planner, search, reader, writer
+from models import ResearchRequest
+import orchestrator
 from utils.logger import get_logger
 
 logger = get_logger("app")
 
-app = FastAPI(title="Deep Research API - Phase 1")
+app = FastAPI(title="Deep Research API - Phase 2")
 
-# Allow frontend to call the API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # For dev, allow all
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-@app.get("/health")
-def health_check():
-    return {"status": "ok"}
+class JobResponse(BaseModel):
+    job_id: str
 
-@app.post("/api/research", response_model=ResearchResponse)
-def run_research(request: ResearchRequest):
-    logger.info(f"--- Started research for: '{request.query}' ---")
+@app.post("/api/research", response_model=JobResponse)
+def start_research(request: ResearchRequest, background_tasks: BackgroundTasks):
+    job_id = str(uuid.uuid4())
+    logger.info(f"Received research request: '{request.query}'. Assigned job_id: {job_id}")
     
-    try:
-        # 1. Planner
-        plan = planner.create_plan(request.query)
-        # Cap queries to 5 as requested
-        queries_to_search = plan.queries[:5]
-        
-        # 2. Search
-        urls = search.search(queries_to_search)
-        
-        # 3. Reader
-        sources = reader.read(urls)
-        
-        if not sources:
-            logger.warning("No sources were fetched successfully.")
-            return ResearchResponse(
-                report="# No sources found\n\nCould not fetch any websites for this topic.",
-                sources=[]
-            )
-            
-        # 4. Writer
-        report = writer.write(request.query, sources)
-        
-        logger.info(f"--- Finished research for: '{request.query}' ---")
-        
-        return ResearchResponse(
-            report=report,
-            sources=[SourceDisplay(title=s.title, url=s.url) for s in sources]
-        )
-        
-    except Exception as e:
-        logger.error(f"Research pipeline failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    # Initialize event queue for this job
+    orchestrator.job_queues[job_id] = asyncio.Queue()
+    
+    # Run the orchestrator in the background
+    background_tasks.add_task(orchestrator.run_research, job_id, request.query)
+    
+    return JobResponse(job_id=job_id)
+
+@app.get("/api/research/{job_id}/events")
+async def research_events(job_id: str):
+    if job_id not in orchestrator.job_queues:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    async def event_generator():
+        queue = orchestrator.job_queues[job_id]
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:
+                    # End of stream
+                    break
+                yield f"data: {event}\n\n"
+        except asyncio.CancelledError:
+            logger.info(f"Client disconnected from SSE for job_id: {job_id}")
+        finally:
+            # Clean up queue
+            if job_id in orchestrator.job_queues:
+                del orchestrator.job_queues[job_id]
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
