@@ -7,10 +7,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from database import engine, get_db, Base
 from models import ResearchRequest
 from orchestrators import research as orchestrator
+from providers import init_providers
 from utils.logger import get_logger
 from api.projects import router as projects_router
+
+# Initialize database
+Base.metadata.create_all(bind=engine)
+
+# Initialize global LLM provider registry
+init_providers()
 
 logger = get_logger("app")
 

@@ -4,7 +4,8 @@ import time
 from typing import Dict, Any, Optional
 
 from models import KnowledgeBase, SourceDisplay
-from services import planner, search, reader, extractor, reflection, writer, reviewer
+from services import search, reader, extractor, reflector, writer, reviewer, cleaner
+from planner import core as planner
 from utils.dedup import deduplicate_facts
 from utils.logger import get_logger
 
@@ -164,22 +165,14 @@ async def run_research(job_id: str, query: str, project_id: Optional[str] = None
             # 4. Extract
             await emit_event(job_id, "status", {"stage": "extracting", "iteration": iteration, "current": 0, "total": len(sources), "message": "Extracting facts concurrently..."})
             
-            async def extract_progress(current, total, domain):
-                await emit_event(job_id, "status", {"stage": "extracting", "iteration": iteration, "current": current, "total": total, "message": f"Extracting from {domain}..."})
-            
-            new_facts = []
-            extraction_results = await extractor.extract_many(sources, on_progress=extract_progress)
-            
-            for idx, ext_result in enumerate(extraction_results):
-                src = sources[idx]
-                tokens_used += len(src.text) // 4  # rough estimation
-                tokens_used += 1000 # output estimation
-                
-                db_src = db_sources.get(src.id)
+            for doc in sources:
+                await emit_event(job_id, "status", {"stage": "extracting", "iteration": iteration, "message": f"Extracting insights from: {doc.title}"})
+                extraction = await extractor.extract_evidence(doc)
                 
                 # Save Evidence to DB
+                db_src = db_sources.get(doc.id)
                 if db_src:
-                    for fact in ext_result.facts:
+                    for fact in extraction.facts:
                         evidence_repo.create(
                             source_id=db_src.id,
                             statement=fact.statement,
@@ -188,19 +181,17 @@ async def run_research(job_id: str, query: str, project_id: Optional[str] = None
                             supporting_text=fact.supporting_text
                         )
                         evidence_extracted_count += 1
-                        
-                new_facts.extend(ext_result.facts)
-                kb.statistics.extend(ext_result.statistics)
-                kb.quotes.extend(ext_result.quotes)
+                
+                kb.claims.extend(extraction.facts)
+                kb.statistics.extend(extraction.statistics)
+                kb.quotes.extend(extraction.quotes)
             
             # 5. Deduplicate
-            logger.info(f"[{job_id}] Deduplicating {len(new_facts)} facts")
-            kb.claims.extend(new_facts)
-            kb.claims = await deduplicate_facts(kb.claims)
+            kb.claims = await cleaner.deduplicate_claims(kb.claims)
             
             # 6. Reflect
-            await emit_event(job_id, "status", {"stage": "reflecting", "iteration": iteration, "message": "Reflecting on gathered knowledge..."})
-            ref_result = await reflection.reflect(plan.goal, plan.success_criteria, kb, iteration)
+            await emit_event(job_id, "status", {"stage": "reflecting", "iteration": iteration, "message": "Evaluating research coverage..."})
+            ref_result = await reflector.reflect(plan.goal, plan.success_criteria, kb, iteration)
             tokens_used += 2000
             await emit_event(job_id, "reflection", ref_result.model_dump())
             
@@ -224,19 +215,16 @@ async def run_research(job_id: str, query: str, project_id: Optional[str] = None
             current_queries = followup_queries[:5]
 
         # 8. Write and Review Loop
-        max_rewrites = 2
         feedback = None
-        for attempt in range(max_rewrites + 1):
-            msg = "Writing final report..." if attempt == 0 else f"Rewriting report based on review (Attempt {attempt})..."
-            await emit_event(job_id, "status", {"stage": "writing", "iteration": actual_iterations, "message": msg})
-            
-            report_content = await writer.write(plan, kb, template_type, feedback=feedback)
+        for write_attempt in range(1, 3):
+            await emit_event(job_id, "status", {"stage": "writing", "message": f"Writing final report (Attempt {write_attempt})..."})
+            report_content = await writer.generate_report(plan, kb, template_type, feedback=feedback)
             
             await emit_event(job_id, "status", {"stage": "writing", "iteration": actual_iterations, "message": "AI Reviewer evaluating report quality..."})
             review = await reviewer.review_report(report_content, plan)
             
-            if review.pass_review or attempt == max_rewrites:
-                if attempt == max_rewrites and not review.pass_review:
+            if review.pass_review or write_attempt == 2:
+                if write_attempt == 2 and not review.pass_review:
                     logger.warning(f"[{job_id}] Max rewrites reached. Accepting report despite failing review.")
                 break
                 

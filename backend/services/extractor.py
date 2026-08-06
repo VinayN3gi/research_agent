@@ -1,34 +1,29 @@
-import asyncio
-from typing import Callable, Awaitable
 from models import Document, ExtractionResult
-from services import gemini
+from providers.registry import registry
 from utils.logger import get_logger
 
 logger = get_logger("extractor")
 
-async def extract_many(docs: list[Document], on_progress: Callable[[int, int, str], Awaitable[None]] = None) -> list[ExtractionResult]:
-    logger.info(f"Extracting facts from {len(docs)} docs concurrently...")
+async def extract_evidence(doc: Document) -> ExtractionResult:
+    logger.info(f"Extracting evidence from: {doc.id}")
+    provider = registry.get("gemini-flash")
     
-    completed = 0
-    async def extract_with_progress(doc):
-        nonlocal completed
-        res = await gemini.extract_evidence(doc)
-        completed += 1
-        if on_progress:
-            await on_progress(completed, len(docs), doc.metadata.get("domain", doc.id))
-        return res
+    prompt = f"""You are a research extraction agent. Extract structured evidence from the following document content.
+Limit your extraction to MAXIMUM 10 facts, 5 statistics, and 3 quotes to avoid flooding the knowledge base.
 
-    tasks = [extract_with_progress(doc) for doc in docs]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+Document Title: {doc.title}
+Source Type: {doc.source_type}
+ID/URL: {doc.id}
+
+Content:
+{doc.text[:40000]}
+"""
+    result = await provider.structured(prompt, ExtractionResult)
     
-    valid_results = []
-    for doc, result in zip(docs, results):
-        if isinstance(result, Exception):
-            logger.error(f"Failed to extract from {doc.id}: {result}")
-            # Return empty result so we don't crash the whole run
-            valid_results.append(ExtractionResult(facts=[], statistics=[], quotes=[]))
-        else:
-            logger.info(f"Extracted {len(result.facts)} facts, {len(result.statistics)} stats, {len(result.quotes)} quotes from {doc.id}")
-            valid_results.append(result)
+    for fact in result.facts:
+        fact.url = doc.id
+        fact.page_title = doc.title
+        if not fact.source:
+            fact.source = doc.metadata.get("domain", doc.source_type)
             
-    return valid_results
+    return result
