@@ -15,6 +15,7 @@ gemini_semaphore = asyncio.Semaphore(10)
 
 class GeminiProvider(LLMProvider):
     def __init__(self, model_name: str = 'gemini-3.1-flash-lite'):
+        super().__init__()
         self.model_name = model_name
         if not GEMINI_API_KEY or GEMINI_API_KEY == "your_gemini_api_key_here":
             logger.error("GEMINI_API_KEY is not set or is dummy.")
@@ -28,6 +29,8 @@ class GeminiProvider(LLMProvider):
             return f"Mock text from {self.model_name}"
             
         temperature = kwargs.get("temperature", 0.7)
+        import time
+        start_time = time.time()
         async with gemini_semaphore:
             try:
                 response = await self.client.aio.models.generate_content(
@@ -35,8 +38,10 @@ class GeminiProvider(LLMProvider):
                     contents=prompt,
                     config=types.GenerateContentConfig(temperature=temperature)
                 )
+                self.record_success(time.time() - start_time)
                 return response.text
             except Exception as e:
+                self.record_failure()
                 logger.error(f"Gemini generate error: {e}")
                 raise
 
@@ -58,6 +63,8 @@ class GeminiProvider(LLMProvider):
             return schema.model_validate({})
 
         temperature = kwargs.get("temperature", 0.7)
+        import time
+        start_time = time.time()
         async with gemini_semaphore:
             try:
                 response = await self.client.aio.models.generate_content(
@@ -69,8 +76,10 @@ class GeminiProvider(LLMProvider):
                         temperature=temperature
                     ),
                 )
+                self.record_success(time.time() - start_time)
                 return schema.model_validate_json(response.text)
             except Exception as e:
+                self.record_failure()
                 logger.error(f"Gemini structured error: {e}")
                 raise
 

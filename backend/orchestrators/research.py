@@ -4,9 +4,10 @@ import time
 from typing import Dict, Any, Optional
 
 from models import KnowledgeBase, SourceDisplay
-from services import search, reader, extractor, reflector, writer, reviewer, cleaner
+from services import search, reader, extractor, reflector, writer, cleaner, debate
 from planner import core as planner
 from evaluation import evaluator
+from checkpoints.manager import CheckpointManager
 from models import CostMetrics
 from utils.dedup import deduplicate_facts
 from utils.logger import get_logger
@@ -71,21 +72,31 @@ async def run_research(job_id: str, query: str, project_id: Optional[str] = None
         # We'll emit the project and run IDs to the frontend so it knows where to look
         await emit_event(job_id, "meta", {"project_id": project.id, "run_id": run.id})
 
-        # 1. Planner
-        if existing_kb:
-            plan = await planner.create_plan(query, existing_kb)
-            kb = existing_kb
+        # 1. Checkpoint & Planner
+        checkpoint = CheckpointManager.load(job_id)
+        if checkpoint:
+            iteration_start = checkpoint["iteration"] + 1
+            kb = checkpoint["kb"]
+            plan = checkpoint["plan"]
+            current_queries = plan.tasks[:5]
+            logger.info(f"[{job_id}] Resuming from checkpoint at iteration {checkpoint['iteration']}")
+            await emit_event(job_id, "status", {"stage": "planning", "message": f"Resuming from checkpoint (Iteration {iteration_start})..."})
+            await emit_event(job_id, "plan", plan.model_dump())
         else:
-            plan = await planner.create_plan(query)
-            kb = KnowledgeBase()
-        tokens_used += 1500 # Rough estimate
-        await emit_event(job_id, "plan", plan.model_dump())
-        
-        current_queries = plan.tasks[:5]
+            iteration_start = 1
+            if existing_kb:
+                plan = await planner.create_plan(query, existing_kb)
+                kb = existing_kb
+            else:
+                plan = await planner.create_plan(query)
+                kb = KnowledgeBase()
+            tokens_used += 1500 # Rough estimate
+            await emit_event(job_id, "plan", plan.model_dump())
+            current_queries = plan.tasks[:5]
         
         actual_iterations = 0
         
-        for iteration in range(1, MAX_ITERATIONS + 1):
+        for iteration in range(iteration_start, MAX_ITERATIONS + 1):
             actual_iterations = iteration
             
             # 2. Search (Task Graph Routing)
@@ -215,25 +226,47 @@ async def run_research(job_id: str, query: str, project_id: Optional[str] = None
             await emit_event(job_id, "status", {"stage": "planning", "iteration": iteration, "message": "Generating follow-up queries..."})
             followup_queries = await planner.create_followup_queries(ref_result.missing_topics)
             current_queries = followup_queries[:5]
+            
+            # Save checkpoint
+            CheckpointManager.save(job_id, iteration, kb, plan)
 
-        # 8. Write and Review Loop
-        feedback = None
+        # 8. Write and Review (Debate) Loop
+        report_content = await writer.generate_report(plan, kb, template_type)
+        
         for write_attempt in range(1, 3):
-            await emit_event(job_id, "status", {"stage": "writing", "message": f"Writing final report (Attempt {write_attempt})..."})
-            report_content = await writer.generate_report(plan, kb, template_type, feedback=feedback)
+            feedback_history = []
             
-            await emit_event(job_id, "status", {"stage": "writing", "iteration": actual_iterations, "message": "AI Reviewer evaluating report quality..."})
-            review = await reviewer.review_report(report_content, plan)
-            
-            if review.pass_review or write_attempt == 2:
-                if write_attempt == 2 and not review.pass_review:
-                    logger.warning(f"[{job_id}] Max rewrites reached. Accepting report despite failing review.")
+            # Evidence Validator
+            await emit_event(job_id, "status", {"stage": "writing", "message": "Debate: Evidence Validator checking claims..."})
+            ev_feedback = await debate.evidence_validator(report_content, kb)
+            if not ev_feedback.pass_validation:
+                feedback_history.append("Evidence Validator: " + ev_feedback.feedback)
+                
+            # Critic
+            await emit_event(job_id, "status", {"stage": "writing", "message": "Debate: Critic analyzing structure and goals..."})
+            critic_feedback = await debate.critic(report_content, plan)
+            if not critic_feedback.pass_validation:
+                feedback_history.append("Critic: " + critic_feedback.feedback)
+                
+            # Fact Checker
+            await emit_event(job_id, "status", {"stage": "writing", "message": "Debate: Fact Checker verifying logic..."})
+            fact_feedback = await debate.fact_checker(report_content)
+            if not fact_feedback.pass_validation:
+                feedback_history.append("Fact Checker: " + fact_feedback.feedback)
+                
+            if len(feedback_history) == 0:
+                logger.info(f"[{job_id}] Report passed all debate checks!")
                 break
                 
-            feedback = review.feedback
-            logger.info(f"[{job_id}] Report failed review. Feedback: {feedback}")
+            if write_attempt == 2:
+                logger.warning(f"[{job_id}] Max rewrites reached. Accepting report despite failing debate.")
+                break
+                
+            logger.info(f"[{job_id}] Report failed debate. Passing to Editor to rewrite. Feedback: {feedback_history}")
+            await emit_event(job_id, "status", {"stage": "writing", "message": "Debate: Editor rewriting based on feedback..."})
+            report_content = await debate.editor(report_content, feedback_history)
             
-        tokens_used += 3000 * write_attempt
+        tokens_used += 4000 * write_attempt
         
         # 9. Evaluate Report
         await emit_event(job_id, "status", {"stage": "evaluating", "message": "EvaluationAgent scoring report quality..."})
@@ -270,6 +303,8 @@ async def run_research(job_id: str, query: str, project_id: Optional[str] = None
             "evaluation": eval_metrics.model_dump(),
             "cost": cost_metrics.model_dump()
         })
+        
+        CheckpointManager.clear(job_id)
         
     except Exception as e:
         logger.error(f"[{job_id}] Orchestration failed: {e}")
