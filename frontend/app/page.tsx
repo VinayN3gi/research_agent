@@ -203,7 +203,7 @@ export default function Home() {
         {/* Output Section */}
         <section className="bg-neutral-900 border border-neutral-800 p-6 rounded-xl space-y-4">
           <h2 className="text-lg font-medium text-neutral-300 border-b border-neutral-800 pb-2">Final Report</h2>
-          <div className="prose prose-invert max-w-none text-neutral-200 min-h-[100px]">
+          <div className="prose prose-invert max-w-none text-neutral-200 min-h-25">
             {report ? (
               <ReactMarkdown>{report}</ReactMarkdown>
             ) : (

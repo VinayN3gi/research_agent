@@ -3,6 +3,8 @@ from typing import List, Optional
 
 class ResearchRequest(BaseModel):
     query: str
+    project_id: Optional[str] = None
+    project_name: Optional[str] = "New Research Project"
 
 class ResearchPlan(BaseModel):
     goal: str

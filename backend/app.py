@@ -6,12 +6,15 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from models import ResearchRequest
-import orchestrator
+from orchestrators import research as orchestrator
 from utils.logger import get_logger
+from api.projects import router as projects_router
 
 logger = get_logger("app")
 
-app = FastAPI(title="Deep Research API - Phase 2")
+app = FastAPI(title="Deep Research API - Phase 3")
+
+app.include_router(projects_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -33,7 +36,7 @@ def start_research(request: ResearchRequest, background_tasks: BackgroundTasks):
     orchestrator.job_queues[job_id] = asyncio.Queue()
     
     # Run the orchestrator in the background
-    background_tasks.add_task(orchestrator.run_research, job_id, request.query)
+    background_tasks.add_task(orchestrator.run_research, job_id, request.query, request.project_id, request.project_name)
     
     return JobResponse(job_id=job_id)
 

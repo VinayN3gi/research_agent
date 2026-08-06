@@ -1,15 +1,20 @@
 import os
 import json
+import asyncio
 from google import genai
 from google.genai import types
-from models import ResearchPlan, ExtractionResult, ReflectionResult, KnowledgeBase, Source
+from models import ResearchPlan, ExtractionResult, ReflectionResult, KnowledgeBase, Source, Evidence
 from config import GEMINI_API_KEY
 from utils.logger import get_logger
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 
 logger = get_logger("gemini")
 
 # Fast and reliable model
 MODEL_NAME = 'gemini-3.1-flash-lite'
+
+# Semaphore to limit concurrent Gemini API calls
+gemini_semaphore = asyncio.Semaphore(10)
 
 def get_client():
     if not GEMINI_API_KEY or GEMINI_API_KEY == "your_gemini_api_key_here":
@@ -17,7 +22,8 @@ def get_client():
         return None
     return genai.Client(api_key=GEMINI_API_KEY)
 
-def generate_plan(query: str) -> ResearchPlan:
+@retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3), reraise=True)
+async def generate_plan(query: str) -> ResearchPlan:
     logger.info(f"Generating plan for query: {query}")
     client = get_client()
     
@@ -29,48 +35,49 @@ def generate_plan(query: str) -> ResearchPlan:
             success_criteria=["Find basic info"]
         )
 
-    try:
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=f"Generate a deep research plan for this topic: '{query}'. Provide a clear goal, a list of target sections for the final report, exactly 5 distinct search queries to begin with, and a list of success criteria.",
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=ResearchPlan,
-                temperature=0.7
-            ),
-        )
-        return ResearchPlan.model_validate_json(response.text)
-    except Exception as e:
-        logger.error(f"Error in Gemini generate_plan: {e}")
-        return ResearchPlan(goal=query, sections=[], queries=[query], success_criteria=[])
+    async with gemini_semaphore:
+        try:
+            response = await client.aio.models.generate_content(
+                model=MODEL_NAME,
+                contents=f"Generate a deep research plan for this topic: '{query}'. Provide a clear goal, a list of target sections for the final report, exactly 5 distinct search queries to begin with, and a list of success criteria.",
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=ResearchPlan,
+                    temperature=0.7
+                ),
+            )
+            return ResearchPlan.model_validate_json(response.text)
+        except Exception as e:
+            logger.error(f"Error in Gemini generate_plan: {e}")
+            raise
 
-def generate_followup_plan(missing_topics: list[str]) -> list[str]:
+@retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3), reraise=True)
+async def generate_followup_plan(missing_topics: list[str]) -> list[str]:
     logger.info(f"Generating followup queries for missing topics: {missing_topics}")
     client = get_client()
     if not client:
         return missing_topics
 
-    try:
-        # Prompt LLM to return list of strings
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=f"Based on these missing research topics: {missing_topics}, generate exactly 3-5 highly targeted web search queries to find this specific information. Return a JSON array of strings.",
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                # The SDK expects a schema, we can just define a list of strings
-                temperature=0.7
-            ),
-        )
-        # Parse JSON array manually since we didn't pass a Pydantic schema
-        queries = json.loads(response.text)
-        if isinstance(queries, list):
-            return queries
-        return missing_topics
-    except Exception as e:
-        logger.error(f"Error in Gemini generate_followup_plan: {e}")
-        return missing_topics
+    async with gemini_semaphore:
+        try:
+            response = await client.aio.models.generate_content(
+                model=MODEL_NAME,
+                contents=f"Based on these missing research topics: {missing_topics}, generate exactly 3-5 highly targeted web search queries to find this specific information. Return a JSON array of strings.",
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.7
+                ),
+            )
+            queries = json.loads(response.text)
+            if isinstance(queries, list):
+                return queries
+            return missing_topics
+        except Exception as e:
+            logger.error(f"Error in Gemini generate_followup_plan: {e}")
+            raise
 
-def extract_evidence(source: Source) -> ExtractionResult:
+@retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3), reraise=True)
+async def extract_evidence(source: Source) -> ExtractionResult:
     logger.info(f"Extracting evidence from: {source.url}")
     client = get_client()
     
@@ -87,29 +94,30 @@ Domain: {source.domain}
 Content:
 {source.markdown[:40000]} # Cap text to avoid extreme context sizes on a single page
 """
-    try:
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=ExtractionResult,
-                temperature=0.1
-            ),
-        )
-        result = ExtractionResult.model_validate_json(response.text)
-        # Inject source metadata into Evidence objects (since LLM might miss it)
-        for fact in result.facts:
-            fact.url = source.url
-            fact.page_title = source.title
-            if not fact.source:
-                fact.source = source.domain or source.url
-        return result
-    except Exception as e:
-        logger.error(f"Error in Gemini extract_evidence for {source.url}: {e}")
-        return ExtractionResult(facts=[], statistics=[], quotes=[])
+    async with gemini_semaphore:
+        try:
+            response = await client.aio.models.generate_content(
+                model=MODEL_NAME,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=ExtractionResult,
+                    temperature=0.1
+                ),
+            )
+            result = ExtractionResult.model_validate_json(response.text)
+            for fact in result.facts:
+                fact.url = source.url
+                fact.page_title = source.title
+                if not fact.source:
+                    fact.source = source.domain or source.url
+            return result
+        except Exception as e:
+            logger.error(f"Error in Gemini extract_evidence for {source.url}: {e}")
+            raise
 
-def reflect(goal: str, success_criteria: list[str], kb: KnowledgeBase, iterations: int) -> ReflectionResult:
+@retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3), reraise=True)
+async def reflect(goal: str, success_criteria: list[str], kb: KnowledgeBase, iterations: int) -> ReflectionResult:
     logger.info(f"Reflecting on knowledge base (Iteration {iterations})")
     client = get_client()
     
@@ -131,30 +139,33 @@ Total Quotes: {len(kb.quotes)}
 Evaluate if the gathered knowledge is sufficient to meet ALL success criteria.
 If missing information, list specific missing topics (e.g. "Pricing details", "Performance benchmarks"). Do NOT generate search queries, just the missing topics.
 """
-    try:
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=ReflectionResult,
-                temperature=0.3
-            ),
-        )
-        return ReflectionResult.model_validate_json(response.text)
-    except Exception as e:
-        logger.error(f"Error in Gemini reflect: {e}")
-        return ReflectionResult(enough_information=True, missing_topics=[])
+    async with gemini_semaphore:
+        try:
+            response = await client.aio.models.generate_content(
+                model=MODEL_NAME,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=ReflectionResult,
+                    temperature=0.3
+                ),
+            )
+            return ReflectionResult.model_validate_json(response.text)
+        except Exception as e:
+            logger.error(f"Error in Gemini reflect: {e}")
+            raise
 
-def generate_report(plan: ResearchPlan, kb: KnowledgeBase) -> str:
+@retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3), reraise=True)
+async def generate_report(plan: ResearchPlan, kb: KnowledgeBase) -> str:
     logger.info("Generating final report from Knowledge Base")
     client = get_client()
     
     if not client:
         return f"# Dummy Report for {plan.goal}\n\nMissing API key."
 
-    # Format KB claims
-    formatted_claims = "\n".join([f"- {f.statement} (Source: {f.page_title} - {f.url})" for f in kb.claims])
+    source_map = {url: i+1 for i, url in enumerate(kb.sources)}
+
+    formatted_claims = "\n".join([f"- {f.statement} (Source ID: [{source_map.get(f.url, 0)}])" for f in kb.claims])
     formatted_stats = "\n".join([f"- {s}" for s in kb.statistics])
     formatted_quotes = "\n".join([f"- {q}" for q in kb.quotes])
 
@@ -165,7 +176,7 @@ Target Sections: {plan.sections}
 
 Use ONLY the following structured evidence to write the report. NEVER invent information.
 Mention conflicting evidence if any exists. Mention missing information if relevant.
-Cite your sources clearly using the provided Source Titles and URLs.
+Cite your sources clearly using the provided Source IDs like this: [1] or [2, 3].
 
 === FACTS & CLAIMS ===
 {formatted_claims}
@@ -176,17 +187,53 @@ Cite your sources clearly using the provided Source Titles and URLs.
 === QUOTES ===
 {formatted_quotes}
 
-Return ONLY Markdown text.
+Return ONLY Markdown text. Do NOT add a References or Bibliography section yourself, it will be generated automatically.
 """
-    try:
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.2
+    async with gemini_semaphore:
+        try:
+            response = await client.aio.models.generate_content(
+                model=MODEL_NAME,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.2
+                )
             )
-        )
-        return response.text
-    except Exception as e:
-        logger.error(f"Error in Gemini generate_report: {e}")
-        return f"# Error Generating Report\n\n{e}"
+            return response.text
+        except Exception as e:
+            logger.error(f"Error in Gemini generate_report: {e}")
+            raise
+
+@retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3), reraise=True)
+async def deduplicate_claims(claims: list[Evidence]) -> list[Evidence]:
+    if len(claims) <= 1:
+        return claims
+        
+    logger.info(f"Semantically deduplicating {len(claims)} claims via Gemini")
+    client = get_client()
+    if not client:
+        return claims
+
+    prompt = "You are a data cleaning assistant. Identify which facts are semantically identical (convey the exact same core information). Return a JSON array of integers representing the indices (0-indexed) of the UNIQUE facts we should keep. For example, if fact 0 and fact 2 mean the exact same thing, only include 0 in the list.\n\nFacts:\n"
+    for idx, fact in enumerate(claims):
+        prompt += f"[{idx}] {fact.statement}\n"
+
+    async with gemini_semaphore:
+        try:
+            response = await client.aio.models.generate_content(
+                model=MODEL_NAME,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.1
+                ),
+            )
+            unique_indices = json.loads(response.text)
+            if isinstance(unique_indices, list) and all(isinstance(x, int) for x in unique_indices):
+                unique_claims = [claims[i] for i in unique_indices if 0 <= i < len(claims)]
+                logger.info(f"Deduplication reduced {len(claims)} to {len(unique_claims)} unique claims.")
+                return unique_claims
+            return claims
+        except Exception as e:
+            logger.error(f"Error in Gemini deduplicate_claims: {e}")
+            return claims
+
