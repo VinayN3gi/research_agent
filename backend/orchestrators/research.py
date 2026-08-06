@@ -9,6 +9,9 @@ from planner import core as planner
 from evaluation import evaluator
 from checkpoints.manager import CheckpointManager
 from models import CostMetrics
+from policy.engine import engine as policy_engine
+from plugins.sdk import registry as plugin_registry
+from memory.agent_memory import memory
 from utils.dedup import deduplicate_facts
 from utils.logger import get_logger
 
@@ -107,6 +110,12 @@ async def run_research(job_id: str, query: str, project_id: Optional[str] = None
             
             for tsk in current_queries:
                 await emit_event(job_id, "status", {"stage": "search", "iteration": iteration, "message": f"Executing task: {tsk.tool} -> {tsk.query}"})
+                
+                # Evaluate Policy
+                if not policy_engine.evaluate_tool_call(tsk.tool, tsk.query):
+                    await emit_event(job_id, "status", {"stage": "search", "iteration": iteration, "message": f"Policy Engine BLOCKED task: {tsk.tool}"})
+                    continue
+                    
                 try:
                     if tsk.tool == "web_search":
                         urls = await search.search_duckduckgo(tsk.query)
@@ -118,10 +127,21 @@ async def run_research(job_id: str, query: str, project_id: Optional[str] = None
                         urls = await search.search_duckduckgo(f"site:reddit.com {tsk.query}")
                         new_urls.extend([u for u in urls if u not in kb.sources])
                     else:
-                        # Route unrecognized tools to External MCP Servers
-                        docs = await mcp_client.execute_tool(tsk.tool, {"query": tsk.query})
-                        mcp_docs.extend(docs)
+                        try:
+                            # 1. Try Plugin SDK first
+                            plugin = plugin_registry.get(tsk.tool)
+                            docs = await plugin.search(tsk.query)
+                            mcp_docs.extend(docs)
+                        except ValueError:
+                            # 2. Fallback to MCP Servers
+                            docs = await mcp_client.execute_tool(tsk.tool, {"query": tsk.query})
+                            mcp_docs.extend(docs)
+                            
+                    # Record tool success in memory if it didn't crash
+                    memory.record_tool_success(query, tsk.tool, 1.0)
                 except Exception as e:
+                    # Record tool failure in memory
+                    memory.record_tool_success(query, tsk.tool, 0.0)
                     logger.error(f"[{job_id}] Search task {tsk.tool} failed: {e}")
             
             # Deduplicate URLs already in search history

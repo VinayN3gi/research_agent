@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 from models import ResearchPlan, PlannerTask
 from providers.registry import registry
+from memory.agent_memory import memory
 from utils.logger import get_logger
 
 logger = get_logger("planner")
@@ -16,10 +17,14 @@ async def create_plan(query: str, existing_kb=None) -> ResearchPlan:
         context_addon = "You are continuing a research project. The following facts are already known, DO NOT plan tasks to search for this information again:\n"
         for idx, claim in enumerate(existing_kb.claims[:50]):
             context_addon += f"- {claim.statement}\n"
+            
+    # Pull Agent Memory for this topic
+    recommended_tools = memory.get_recommended_tools(query)
+    memory_addon = f"\nSystem Memory implies these tools are most effective for this topic domain (ranked best to worst): {recommended_tools}\n"
 
     prompt = f"""Generate a deep research plan for this topic: '{query}'. Provide a clear goal, a list of target sections for the final report, exactly 5 distinct tasks to begin with, and a list of success criteria.
 Each task must specify a 'tool' (e.g., 'web_search') and a 'query' for that tool.
-
+{memory_addon}
 {context_addon}"""
 
     plan = await provider.structured(prompt, ResearchPlan)
