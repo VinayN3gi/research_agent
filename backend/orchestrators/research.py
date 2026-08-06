@@ -37,7 +37,7 @@ async def end_stream(job_id: str):
     if job_id in job_queues:
         await job_queues[job_id].put(None) # Sentinel to close stream
 
-async def run_research(job_id: str, query: str, project_id: Optional[str] = None, project_name: str = "New Research Project", template_type: str = "General Report", file_paths: list[str] = None):
+async def run_research(job_id: str, query: str, project_id: Optional[str] = None, project_name: str = "New Research Project", template_type: str = "General Report", file_paths: list[str] = None, existing_kb: KnowledgeBase = None):
     logger.info(f"[{job_id}] Starting research orchestration for query: {query}")
     await emit_event(job_id, "status", {"stage": "planning", "message": "Creating research plan..."})
     file_paths = file_paths or []
@@ -69,23 +69,49 @@ async def run_research(job_id: str, query: str, project_id: Optional[str] = None
         await emit_event(job_id, "meta", {"project_id": project.id, "run_id": run.id})
 
         # 1. Planner
-        plan = await planner.create_plan(query)
+        if existing_kb:
+            plan = await planner.create_plan(query, existing_kb)
+            kb = existing_kb
+        else:
+            plan = await planner.create_plan(query)
+            kb = KnowledgeBase()
         tokens_used += 1500 # Rough estimate
         await emit_event(job_id, "plan", plan.model_dump())
         
-        kb = KnowledgeBase()
-        current_queries = plan.queries[:5]
+        current_queries = plan.tasks[:5]
         
         actual_iterations = 0
         
         for iteration in range(1, MAX_ITERATIONS + 1):
             actual_iterations = iteration
-            await emit_event(job_id, "status", {"stage": "searching", "iteration": iteration, "message": f"Searching {len(current_queries)} queries..."})
             
-            # 2. Search
-            urls = await search.search(current_queries)
-            # Remove URLs already in search history
-            new_urls = [u for u in urls if u not in kb.research_history]
+            # 2. Search (Task Graph Routing)
+            new_urls = []
+            mcp_docs = []
+            
+            from services.mcp_client import mcp_client
+            
+            for tsk in current_queries:
+                await emit_event(job_id, "status", {"stage": "search", "iteration": iteration, "message": f"Executing task: {tsk.tool} -> {tsk.query}"})
+                try:
+                    if tsk.tool == "web_search":
+                        urls = await search.search_duckduckgo(tsk.query)
+                        new_urls.extend([u for u in urls if u not in kb.sources])
+                    elif tsk.tool == "github":
+                        urls = await search.search_duckduckgo(f"site:github.com {tsk.query}")
+                        new_urls.extend([u for u in urls if u not in kb.sources])
+                    elif tsk.tool == "reddit":
+                        urls = await search.search_duckduckgo(f"site:reddit.com {tsk.query}")
+                        new_urls.extend([u for u in urls if u not in kb.sources])
+                    else:
+                        # Route unrecognized tools to External MCP Servers
+                        docs = await mcp_client.execute_tool(tsk.tool, {"query": tsk.query})
+                        mcp_docs.extend(docs)
+                except Exception as e:
+                    logger.error(f"[{job_id}] Search task {tsk.tool} failed: {e}")
+            
+            # Deduplicate URLs already in search history
+            new_urls = [u for u in new_urls if u not in kb.research_history]
             kb.research_history.extend(new_urls)
             
             if not new_urls:
@@ -97,6 +123,9 @@ async def run_research(job_id: str, query: str, project_id: Optional[str] = None
                 await emit_event(job_id, "status", {"stage": "reading", "iteration": iteration, "current": current, "total": total, "message": f"Fetched {url[:50]}..."})
                 
             sources = await reader.read(new_urls, on_progress=read_progress)
+            
+            # Append documents fetched dynamically from MCP Integrations
+            sources.extend(mcp_docs)
             
             # PHASE 4A: Parse local documents if provided (only in first iteration)
             if iteration == 1 and file_paths:

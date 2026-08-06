@@ -64,6 +64,43 @@ async def upload_document(file: UploadFile = File(...)):
         shutil.copyfileobj(file.file, buffer)
     return {"file_path": file_path, "filename": file.filename}
 
+@app.post("/api/projects/{project_id}/continue", response_model=JobResponse)
+def continue_research(project_id: str, request: ResearchRequest, background_tasks: BackgroundTasks):
+    db = next(get_db())
+    from repositories.evidence_repository import EvidenceRepository
+    from models import KnowledgeBase, Evidence as PydanticEvidence
+    
+    evidence_repo = EvidenceRepository(db)
+    existing_evidence = evidence_repo.get_by_project(project_id)
+    
+    kb = KnowledgeBase()
+    for e in existing_evidence:
+        kb.claims.append(PydanticEvidence(
+            statement=e.statement,
+            source=e.source_id,
+            url=e.source.url if hasattr(e, 'source') and e.source else "",
+            page_title=e.source.title if hasattr(e, 'source') and e.source else "",
+            confidence=e.confidence,
+            category=e.category,
+            supporting_text=e.supporting_text or ""
+        ))
+    
+    job_id = str(uuid.uuid4())
+    orchestrator.job_queues[job_id] = asyncio.Queue()
+    
+    background_tasks.add_task(
+        orchestrator.run_research, 
+        job_id, 
+        request.query, 
+        project_id, 
+        request.project_name,
+        request.template_type,
+        request.file_paths,
+        kb
+    )
+    
+    return JobResponse(job_id=job_id)
+
 @app.post("/api/projects/{project_id}/chat")
 async def chat_with_project(project_id: str, request: ChatRequest):
     from services.chat import get_chat_response

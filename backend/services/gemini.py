@@ -3,7 +3,7 @@ import json
 import asyncio
 from google import genai
 from google.genai import types
-from models import ResearchPlan, ExtractionResult, ReflectionResult, KnowledgeBase, Document, Evidence
+from models import ResearchPlan, ExtractionResult, ReflectionResult, KnowledgeBase, Document, Evidence, PlannerTask
 from config import GEMINI_API_KEY
 from utils.logger import get_logger
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
@@ -23,7 +23,7 @@ def get_client():
     return genai.Client(api_key=GEMINI_API_KEY)
 
 @retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3), reraise=True)
-async def generate_plan(query: str) -> ResearchPlan:
+async def generate_plan(query: str, existing_kb: KnowledgeBase = None) -> ResearchPlan:
     logger.info(f"Generating plan for query: {query}")
     client = get_client()
     
@@ -31,15 +31,26 @@ async def generate_plan(query: str) -> ResearchPlan:
         return ResearchPlan(
             goal=f"Research about {query}",
             sections=["Introduction", "Details"],
-            queries=[f"{query} details"],
+            tasks=[PlannerTask(tool="web_search", query=f"{query} details")],
             success_criteria=["Find basic info"]
         )
+
+    context_addon = ""
+    if existing_kb and existing_kb.claims:
+        context_addon = "You are continuing a research project. The following facts are already known, DO NOT plan tasks to search for this information again:\n"
+        for idx, claim in enumerate(existing_kb.claims[:50]):
+            context_addon += f"- {claim.statement}\n"
+
+    prompt = f"""Generate a deep research plan for this topic: '{query}'. Provide a clear goal, a list of target sections for the final report, exactly 5 distinct tasks to begin with, and a list of success criteria.
+Each task must specify a 'tool' (e.g., 'web_search') and a 'query' for that tool.
+
+{context_addon}"""
 
     async with gemini_semaphore:
         try:
             response = await client.aio.models.generate_content(
                 model=MODEL_NAME,
-                contents=f"Generate a deep research plan for this topic: '{query}'. Provide a clear goal, a list of target sections for the final report, exactly 5 distinct search queries to begin with, and a list of success criteria.",
+                contents=prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=ResearchPlan,
@@ -52,26 +63,32 @@ async def generate_plan(query: str) -> ResearchPlan:
             raise
 
 @retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3), reraise=True)
-async def generate_followup_plan(missing_topics: list[str]) -> list[str]:
+async def generate_followup_plan(missing_topics: list[str]) -> list[PlannerTask]:
     logger.info(f"Generating followup queries for missing topics: {missing_topics}")
     client = get_client()
     if not client:
-        return missing_topics
+        return [PlannerTask(tool="web_search", query=topic) for topic in missing_topics]
+
+    prompt = f"""Based on these missing research topics: {missing_topics}, generate exactly 3-5 highly targeted tasks to find this specific information. Each task must have a 'tool' (e.g., 'web_search') and a 'query'.
+Return a JSON array of these task objects."""
+
+    from pydantic import BaseModel
+    class FollowupPlan(BaseModel):
+        tasks: list[PlannerTask]
 
     async with gemini_semaphore:
         try:
             response = await client.aio.models.generate_content(
                 model=MODEL_NAME,
-                contents=f"Based on these missing research topics: {missing_topics}, generate exactly 3-5 highly targeted web search queries to find this specific information. Return a JSON array of strings.",
+                contents=prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
+                    response_schema=FollowupPlan,
                     temperature=0.7
                 ),
             )
-            queries = json.loads(response.text)
-            if isinstance(queries, list):
-                return queries
-            return missing_topics
+            data = FollowupPlan.model_validate_json(response.text)
+            return data.tasks
         except Exception as e:
             logger.error(f"Error in Gemini generate_followup_plan: {e}")
             raise

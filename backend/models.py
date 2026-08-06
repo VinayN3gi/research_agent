@@ -17,10 +17,14 @@ class Document(BaseModel):
     tables: List[str] = []
     metadata: dict = {}
 
+class PlannerTask(BaseModel):
+    tool: str
+    query: str
+
 class ResearchPlan(BaseModel):
     goal: str
     sections: List[str]
-    queries: List[str]
+    tasks: List[PlannerTask]
     success_criteria: List[str]
 
 class Source(BaseModel):

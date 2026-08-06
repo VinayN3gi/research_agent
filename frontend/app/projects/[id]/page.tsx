@@ -42,21 +42,26 @@ export default function ProjectWorkspace() {
   const [evidenceData, setEvidenceData] = useState<any>(null);
   const [selectedCitation, setSelectedCitation] = useState<string | null>(null);
 
-  useEffect(() => {
-    const fetchProject = async () => {
-      try {
-        const res = await fetch(`http://localhost:8000/api/projects/${projectId}`);
-        if (res.ok) {
-          const data = await res.json();
-          setProject(data);
-        }
-      } catch (e) {
-        console.error("Failed to fetch project", e);
-      } finally {
-        setIsLoading(false);
-      }
-    };
+  // Continue Research state
+  const [continueQuery, setContinueQuery] = useState("");
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [liveEvents, setLiveEvents] = useState<{stage: string, message: string}[]>([]);
 
+  const fetchProject = async () => {
+    try {
+      const res = await fetch(`http://localhost:8000/api/projects/${projectId}`);
+      if (res.ok) {
+        const data = await res.json();
+        setProject(data);
+      }
+    } catch (e) {
+      console.error("Failed to fetch project", e);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
     const fetchEvidence = async () => {
       try {
         const res = await fetch(`http://localhost:8000/api/projects/${projectId}/evidence`);
@@ -70,6 +75,38 @@ export default function ProjectWorkspace() {
     fetchProject();
     fetchEvidence();
   }, [projectId]);
+
+  useEffect(() => {
+    if (!activeJobId) return;
+    const es = new EventSource(`http://localhost:8000/api/research/${activeJobId}/events`);
+    es.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      if (data.type === "status") {
+        setLiveEvents(prev => [...prev, { stage: data.data.stage, message: data.data.message }]);
+      }
+    };
+    es.onerror = () => { 
+      es.close(); 
+      setActiveJobId(null); 
+      fetchProject(); // Reload project data after research finishes
+    };
+    return () => es.close();
+  }, [activeJobId]);
+
+  const handleContinue = async () => {
+    if (!continueQuery) return;
+    setLiveEvents([]);
+    try {
+      const res = await fetch(`http://localhost:8000/api/projects/${projectId}/continue`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: continueQuery, project_name: project?.name })
+      });
+      const data = await res.json();
+      setActiveJobId(data.job_id);
+      setContinueQuery("");
+    } catch(e) {}
+  };
 
   const handleChat = async () => {
     if (!chatMessage) return;
@@ -224,6 +261,45 @@ export default function ProjectWorkspace() {
                  <div className="w-12 h-12 border-4 border-blue-500/30 border-t-blue-500 rounded-full animate-spin mb-4"></div>
                  No report generated yet. Research is currently running...
                </div>
+            )}
+
+            {/* Continue Research Input */}
+            {project.reports.length > 0 && !activeJobId && (
+              <div className="mt-8 bg-neutral-900/50 border border-neutral-800 p-6 rounded-2xl">
+                <h3 className="font-medium text-neutral-200 mb-2">Continue Research</h3>
+                <p className="text-xs text-neutral-500 mb-4">Direct the agent to investigate missing topics or expand on current findings. The agent will read the existing knowledge base first to avoid redundant searches.</p>
+                <div className="flex gap-2">
+                  <input 
+                    type="text" 
+                    value={continueQuery}
+                    onChange={e => setContinueQuery(e.target.value)}
+                    placeholder="e.g. Look deeper into their Q3 financials..."
+                    className="flex-1 bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-2 text-sm text-neutral-200 focus:outline-none focus:border-purple-500"
+                  />
+                  <button onClick={handleContinue} className="px-6 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm font-medium transition-colors">
+                    Continue
+                  </button>
+                </div>
+              </div>
+            )}
+            
+            {/* Agent Reasoning Terminal */}
+            {activeJobId && (
+              <div className="mt-8 bg-black border border-neutral-800 p-6 rounded-2xl shadow-xl">
+                <h3 className="font-medium text-neutral-400 mb-4 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                  Agent Reasoning Pipeline
+                </h3>
+                <div className="h-48 overflow-y-auto space-y-2 font-mono text-xs text-neutral-300 bg-neutral-950 p-4 rounded-lg">
+                  {liveEvents.map((ev, i) => (
+                    <div key={i} className="flex gap-4">
+                      <span className="text-neutral-600 shrink-0">[{ev.stage}]</span>
+                      <span className="text-green-400">{ev.message}</span>
+                    </div>
+                  ))}
+                  <div className="text-neutral-500 animate-pulse">_</div>
+                </div>
+              </div>
             )}
           </div>
           
