@@ -40,8 +40,12 @@ export default function Home() {
           setStage(data.stage);
           setStatusMessage(data.message);
           
-          // Generate a log entry similar to backend logging
-          const time = new Date().toISOString().split('T')[1].substring(0, 12);
+          // Generate a log entry similar to backend logging using local time
+          const now = new Date();
+          const time = now.getHours().toString().padStart(2, '0') + ':' +
+                       now.getMinutes().toString().padStart(2, '0') + ':' +
+                       now.getSeconds().toString().padStart(2, '0') + '.' +
+                       now.getMilliseconds().toString().padStart(3, '0');
           const logEntry = `${time} - [INFO] - ${data.stage || 'system'} - ${data.message}`;
           setLogs(prev => [...prev, logEntry]);
 
@@ -155,7 +159,7 @@ export default function Home() {
               stage === 'Error' ? 'bg-red-900/50 text-red-400' :
               'bg-blue-900/50 text-blue-400 animate-pulse'
             }`}>
-              {stage.toUpperCase()} {iteration > 0 && `(Round ${iteration})`}
+              {stage.toUpperCase()} {iteration > 0 && stage !== 'Completed' && `(Round ${iteration})`}
             </span>
           </div>
 

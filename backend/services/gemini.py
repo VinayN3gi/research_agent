@@ -210,14 +210,14 @@ Return ONLY Markdown text. Do NOT add a References or Bibliography section yours
 If you are presenting comparisons, trends, or structured numeric data, you MUST include a JSON chart representation wrapped in triple backticks with the language "chart".
 Format exactly like this:
 ```chart
-{
-  "chart": {
+{{
+  "chart": {{
     "type": "bar",
     "title": "Chart Title",
     "labels": ["Item A", "Item B"],
     "values": [10, 20]
-  }
-}
+  }}
+}}
 ```
 Supported types are: "bar", "line", "pie".
 """
