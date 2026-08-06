@@ -67,6 +67,27 @@ class SourceDisplay(BaseModel):
     title: str
     url: str
 
+class EvaluationMetrics(BaseModel):
+    coverage: int
+    evidence_quality: int
+    citation_correctness: int
+    freshness: int
+    source_diversity: int
+    contradiction_handling: int
+    hallucination_risk: int
+    completeness: int
+    confidence: int
+    overall_score: int
+    missing_topics: List[str] = []
+
+class CostMetrics(BaseModel):
+    total_tokens: int
+    estimated_cost_usd: float
+    duration_seconds: float
+    total_llm_calls: int
+
 class ResearchResponse(BaseModel):
     report: str
     sources: List[SourceDisplay]
+    evaluation: Optional[EvaluationMetrics] = None
+    cost: Optional[CostMetrics] = None

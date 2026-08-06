@@ -46,6 +46,9 @@ export default function ProjectWorkspace() {
   const [continueQuery, setContinueQuery] = useState("");
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [liveEvents, setLiveEvents] = useState<{stage: string, message: string}[]>([]);
+  
+  // Observability state
+  const [metrics, setMetrics] = useState<{evaluation?: any, cost?: any} | null>(null);
 
   const fetchProject = async () => {
     try {
@@ -83,6 +86,10 @@ export default function ProjectWorkspace() {
       const data = JSON.parse(e.data);
       if (data.type === "status") {
         setLiveEvents(prev => [...prev, { stage: data.data.stage, message: data.data.message }]);
+      } else if (data.type === "complete") {
+        if (data.data.evaluation && data.data.cost) {
+          setMetrics({ evaluation: data.data.evaluation, cost: data.data.cost });
+        }
       }
     };
     es.onerror = () => { 
@@ -261,6 +268,63 @@ export default function ProjectWorkspace() {
                  <div className="w-12 h-12 border-4 border-blue-500/30 border-t-blue-500 rounded-full animate-spin mb-4"></div>
                  No report generated yet. Research is currently running...
                </div>
+            )}
+            
+            {/* Observability Dashboard */}
+            {metrics && (
+              <div className="mt-8 bg-neutral-900 border border-neutral-800 p-8 rounded-2xl">
+                <h3 className="text-lg font-medium text-neutral-200 mb-6 border-b border-neutral-800 pb-2">Phase 5 Observability & Metrics</h3>
+                
+                <div className="grid grid-cols-3 gap-4 mb-8">
+                  <div className="bg-black border border-neutral-800 p-4 rounded-xl text-center">
+                    <div className="text-xs text-neutral-500 uppercase tracking-wide mb-1">Research Cost</div>
+                    <div className="text-2xl font-bold text-green-400">${metrics.cost?.estimated_cost_usd?.toFixed(3)}</div>
+                  </div>
+                  <div className="bg-black border border-neutral-800 p-4 rounded-xl text-center">
+                    <div className="text-xs text-neutral-500 uppercase tracking-wide mb-1">Duration</div>
+                    <div className="text-2xl font-bold text-blue-400">{metrics.cost?.duration_seconds}s</div>
+                  </div>
+                  <div className="bg-black border border-neutral-800 p-4 rounded-xl text-center">
+                    <div className="text-xs text-neutral-500 uppercase tracking-wide mb-1">Tokens Used</div>
+                    <div className="text-2xl font-bold text-purple-400">{(metrics.cost?.total_tokens / 1000).toFixed(1)}k</div>
+                  </div>
+                </div>
+
+                <div className="bg-black border border-neutral-800 p-6 rounded-xl">
+                  <div className="flex justify-between items-center mb-6">
+                    <h4 className="text-sm font-medium text-neutral-300">Evaluation Scorecard</h4>
+                    <span className="bg-blue-900/40 text-blue-400 font-bold px-3 py-1 rounded text-lg">{metrics.evaluation?.overall_score}/100</span>
+                  </div>
+                  
+                  <div className="space-y-4">
+                    {[
+                      { label: "Coverage", value: metrics.evaluation?.coverage },
+                      { label: "Evidence Quality", value: metrics.evaluation?.evidence_quality },
+                      { label: "Citation Correctness", value: metrics.evaluation?.citation_correctness },
+                      { label: "Freshness", value: metrics.evaluation?.freshness },
+                      { label: "Source Diversity", value: metrics.evaluation?.source_diversity },
+                      { label: "Contradiction Handling", value: metrics.evaluation?.contradiction_handling },
+                      { label: "Hallucination Risk (100=Low)", value: metrics.evaluation?.hallucination_risk },
+                      { label: "Completeness", value: metrics.evaluation?.completeness },
+                      { label: "Confidence", value: metrics.evaluation?.confidence },
+                    ].map((m, i) => (
+                      <div key={i} className="flex justify-between items-center text-sm border-b border-neutral-800/50 pb-2">
+                        <span className="text-neutral-400">{m.label}</span>
+                        <span className={`font-medium ${m.value >= 90 ? 'text-green-400' : m.value >= 70 ? 'text-yellow-400' : 'text-red-400'}`}>{m.value}</span>
+                      </div>
+                    ))}
+                  </div>
+                  
+                  {metrics.evaluation?.missing_topics?.length > 0 && (
+                    <div className="mt-6 pt-4 border-t border-neutral-800">
+                      <h4 className="text-xs font-semibold text-neutral-500 uppercase mb-2">Identified Missing Topics</h4>
+                      <ul className="list-disc list-inside text-sm text-red-400">
+                        {metrics.evaluation.missing_topics.map((t: string, i: number) => <li key={i}>{t}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              </div>
             )}
 
             {/* Continue Research Input */}

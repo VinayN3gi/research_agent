@@ -4,7 +4,22 @@ from pydantic import BaseModel
 
 T = TypeVar('T', bound=BaseModel)
 
+class ProviderHealth(BaseModel):
+    successes: int = 0
+    failures: int = 0
+    total_latency_seconds: float = 0.0
+
 class LLMProvider(ABC):
+    def __init__(self):
+        self.health = ProviderHealth()
+        
+    def record_success(self, latency: float):
+        self.health.successes += 1
+        self.health.total_latency_seconds += latency
+        
+    def record_failure(self):
+        self.health.failures += 1
+
     @abstractmethod
     async def generate(self, prompt: str, **kwargs) -> str:
         """Generate text from a prompt."""

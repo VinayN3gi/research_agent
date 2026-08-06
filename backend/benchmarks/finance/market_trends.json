@@ -1,0 +1,20 @@
+{
+  "category": "Finance",
+  "topic": "Market Trends",
+  "question": "What are the projected macroeconomic impacts of AI adoption on the US labor market from 2025 to 2030?",
+  "expected_topics": [
+    "Job Displacement",
+    "Productivity Gains",
+    "New Job Categories",
+    "GDP Impact",
+    "Sector-Specific Vulnerabilities"
+  ],
+  "required_sources": [
+    "Economic Think Tank Reports (e.g., McKinsey, Goldman Sachs)",
+    "Labor Department Statistics"
+  ],
+  "evaluation_criteria": {
+    "coverage_threshold": 85,
+    "hallucination_tolerance": "strict"
+  }
+}

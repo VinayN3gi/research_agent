@@ -1,0 +1,20 @@
+{
+  "category": "Technology",
+  "topic": "EV Batteries",
+  "question": "Compare Solid-State EV Batteries vs Lithium-Ion EV Batteries in 2026.",
+  "expected_topics": [
+    "Energy Density",
+    "Charging Speed",
+    "Safety (Thermal Runaway)",
+    "Manufacturing Cost",
+    "Commercial Availability"
+  ],
+  "required_sources": [
+    "Official OEM Press Releases",
+    "Battery Research Papers"
+  ],
+  "evaluation_criteria": {
+    "coverage_threshold": 90,
+    "hallucination_tolerance": "strict"
+  }
+}

@@ -6,6 +6,8 @@ from typing import Dict, Any, Optional
 from models import KnowledgeBase, SourceDisplay
 from services import search, reader, extractor, reflector, writer, reviewer, cleaner
 from planner import core as planner
+from evaluation import evaluator
+from models import CostMetrics
 from utils.dedup import deduplicate_facts
 from utils.logger import get_logger
 
@@ -231,7 +233,11 @@ async def run_research(job_id: str, query: str, project_id: Optional[str] = None
             feedback = review.feedback
             logger.info(f"[{job_id}] Report failed review. Feedback: {feedback}")
             
-        tokens_used += 3000 * (attempt + 1)
+        tokens_used += 3000 * write_attempt
+        
+        # 9. Evaluate Report
+        await emit_event(job_id, "status", {"stage": "evaluating", "message": "EvaluationAgent scoring report quality..."})
+        eval_metrics = await evaluator.evaluate_report(report_content, plan)
         
         # Save Report
         report_repo.create(project_id=project.id, run_id=run.id, content=report_content)
@@ -251,7 +257,19 @@ async def run_research(job_id: str, query: str, project_id: Optional[str] = None
         
         sources_display = [SourceDisplay(title=s, url=s).model_dump() for s in kb.sources]
         
-        await emit_event(job_id, "complete", {"report": report_content, "sources": sources_display})
+        cost_metrics = CostMetrics(
+            total_tokens=tokens_used,
+            estimated_cost_usd=tokens_used * 0.000001,
+            duration_seconds=time_taken,
+            total_llm_calls=0 # Can be tracked later
+        )
+        
+        await emit_event(job_id, "complete", {
+            "report": report_content, 
+            "sources": sources_display,
+            "evaluation": eval_metrics.model_dump(),
+            "cost": cost_metrics.model_dump()
+        })
         
     except Exception as e:
         logger.error(f"[{job_id}] Orchestration failed: {e}")
