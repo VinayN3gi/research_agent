@@ -1,7 +1,7 @@
 import asyncio
 import httpx
 from typing import Callable, Awaitable
-from models import Source
+from models import Document
 from services.fetcher import get_fetcher
 from utils.logger import get_logger
 
@@ -31,7 +31,7 @@ QUALITY_SCORES = {
     "Unknown": 30
 }
 
-async def read(urls: list[str], on_progress: Callable[[int, int, str], Awaitable[None]] = None) -> list[Source]:
+async def read(urls: list[str], on_progress: Callable[[int, int, str], Awaitable[None]] = None) -> list[Document]:
     logger.info(f"Reading... fetching {len(urls)} pages concurrently.")
     fetcher = get_fetcher()
     sources = []
@@ -58,18 +58,21 @@ async def read(urls: list[str], on_progress: Callable[[int, int, str], Awaitable
                 domain = data.get("domain", "")
                 title = data.get("title", url)
                 
-                source = Source(
+                doc = Document(
+                    id=url,
                     title=title,
-                    url=url,
-                    markdown=data.get("markdown", ""),
-                    published_date=data.get("published_date"),
-                    author=data.get("author"),
-                    domain=domain,
-                    quality_score=evaluate_quality(domain, title)
+                    source_type="web",
+                    text=data.get("markdown", ""),
+                    metadata={
+                        "published_date": data.get("published_date"),
+                        "author": data.get("author"),
+                        "domain": domain,
+                        "quality_score": evaluate_quality(domain, title)
+                    }
                 )
-                sources.append(source)
+                sources.append(doc)
     # Source Ranking: Sort by our heuristic quality score (descending)
-    sources.sort(key=lambda s: QUALITY_SCORES.get(s.quality_score, 0), reverse=True)
+    sources.sort(key=lambda s: QUALITY_SCORES.get(s.metadata.get("quality_score", "Unknown"), 0), reverse=True)
     
     logger.info(f"Reading... successfully fetched and ranked {len(sources)} pages.")
     return sources

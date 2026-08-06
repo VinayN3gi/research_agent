@@ -5,6 +5,17 @@ class ResearchRequest(BaseModel):
     query: str
     project_id: Optional[str] = None
     project_name: Optional[str] = "New Research Project"
+    template_type: Optional[str] = "General Report"
+    file_paths: List[str] = []
+    
+class Document(BaseModel):
+    id: str
+    title: str
+    source_type: str  # e.g., "pdf", "docx", "web", "csv", "image"
+    text: str
+    images: List[str] = [] # list of image descriptors or paths
+    tables: List[str] = []
+    metadata: dict = {}
 
 class ResearchPlan(BaseModel):
     goal: str

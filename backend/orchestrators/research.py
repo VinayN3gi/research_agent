@@ -4,7 +4,7 @@ import time
 from typing import Dict, Any, Optional
 
 from models import KnowledgeBase, SourceDisplay
-from services import planner, search, reader, extractor, reflection, writer
+from services import planner, search, reader, extractor, reflection, writer, reviewer
 from utils.dedup import deduplicate_facts
 from utils.logger import get_logger
 
@@ -37,9 +37,10 @@ async def end_stream(job_id: str):
     if job_id in job_queues:
         await job_queues[job_id].put(None) # Sentinel to close stream
 
-async def run_research(job_id: str, query: str, project_id: Optional[str] = None, project_name: str = "New Research Project"):
+async def run_research(job_id: str, query: str, project_id: Optional[str] = None, project_name: str = "New Research Project", template_type: str = "General Report", file_paths: list[str] = None):
     logger.info(f"[{job_id}] Starting research orchestration for query: {query}")
     await emit_event(job_id, "status", {"stage": "planning", "message": "Creating research plan..."})
+    file_paths = file_paths or []
     
     start_time = time.time()
     pages_read_count = 0
@@ -96,14 +97,40 @@ async def run_research(job_id: str, query: str, project_id: Optional[str] = None
                 await emit_event(job_id, "status", {"stage": "reading", "iteration": iteration, "current": current, "total": total, "message": f"Fetched {url[:50]}..."})
                 
             sources = await reader.read(new_urls, on_progress=read_progress)
+            
+            # PHASE 4A: Parse local documents if provided (only in first iteration)
+            if iteration == 1 and file_paths:
+                from services.parser import get_parser
+                import os
+                parser = get_parser()
+                for fpath in file_paths:
+                    if os.path.exists(fpath):
+                        await emit_event(job_id, "status", {"stage": "reading", "iteration": iteration, "current": 0, "total": 0, "message": f"Parsing local document {os.path.basename(fpath)}..."})
+                        try:
+                            doc = await parser.parse(fpath)
+                            sources.append(doc)
+                        except Exception as e:
+                            logger.error(f"[{job_id}] Failed to parse {fpath}: {e}")
+
             pages_read_count += len(sources)
             kb.sources.extend([s.url for s in sources])
             
             # Save Sources to DB
+            from services.reader import QUALITY_SCORES
             db_sources = {}
-            for s in sources:
-                db_s = source_repo.create(run_id=run.id, title=s.title, url=s.url, domain=s.domain, markdown=s.markdown)
-                db_sources[s.url] = db_s
+            for src in sources:
+                qs_str = src.metadata.get("quality_score", "Unknown")
+                qs_val = QUALITY_SCORES.get(qs_str, 0.0)
+                
+                db_source = source_repo.create(
+                    run_id=run.id,
+                    title=src.title,
+                    url=src.id,
+                    domain=src.metadata.get("domain", src.source_type),
+                    markdown=src.text,
+                    quality_score=qs_val
+                )
+                db_sources[src.id] = db_source
             
             # 4. Extract
             await emit_event(job_id, "status", {"stage": "extracting", "iteration": iteration, "current": 0, "total": len(sources), "message": "Extracting facts concurrently..."})
@@ -116,10 +143,10 @@ async def run_research(job_id: str, query: str, project_id: Optional[str] = None
             
             for idx, ext_result in enumerate(extraction_results):
                 src = sources[idx]
-                tokens_used += len(src.markdown) // 4  # rough estimation
+                tokens_used += len(src.text) // 4  # rough estimation
                 tokens_used += 1000 # output estimation
                 
-                db_src = db_sources.get(src.url)
+                db_src = db_sources.get(src.id)
                 
                 # Save Evidence to DB
                 if db_src:
@@ -167,10 +194,27 @@ async def run_research(job_id: str, query: str, project_id: Optional[str] = None
             followup_queries = await planner.create_followup_queries(ref_result.missing_topics)
             current_queries = followup_queries[:5]
 
-        # 8. Write
-        await emit_event(job_id, "status", {"stage": "writing", "message": "Writing final report..."})
-        report_content = await writer.write(plan, kb)
-        tokens_used += 3000
+        # 8. Write and Review Loop
+        max_rewrites = 2
+        feedback = None
+        for attempt in range(max_rewrites + 1):
+            msg = "Writing final report..." if attempt == 0 else f"Rewriting report based on review (Attempt {attempt})..."
+            await emit_event(job_id, "status", {"stage": "writing", "iteration": actual_iterations, "message": msg})
+            
+            report_content = await writer.write(plan, kb, template_type, feedback=feedback)
+            
+            await emit_event(job_id, "status", {"stage": "writing", "iteration": actual_iterations, "message": "AI Reviewer evaluating report quality..."})
+            review = await reviewer.review_report(report_content, plan)
+            
+            if review.pass_review or attempt == max_rewrites:
+                if attempt == max_rewrites and not review.pass_review:
+                    logger.warning(f"[{job_id}] Max rewrites reached. Accepting report despite failing review.")
+                break
+                
+            feedback = review.feedback
+            logger.info(f"[{job_id}] Report failed review. Feedback: {feedback}")
+            
+        tokens_used += 3000 * (attempt + 1)
         
         # Save Report
         report_repo.create(project_id=project.id, run_id=run.id, content=report_content)

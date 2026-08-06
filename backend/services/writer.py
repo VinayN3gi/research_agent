@@ -4,10 +4,10 @@ from utils.logger import get_logger
 
 logger = get_logger("writer")
 
-async def write(plan: ResearchPlan, kb: KnowledgeBase) -> str:
+async def write(plan: ResearchPlan, kb: KnowledgeBase, template_type: str = "General Report", feedback: str = None) -> str:
     logger.info("Writing... formatting knowledge base for LLM.")
     # LLM generates the report with inline [ID] citations
-    report = await gemini.generate_report(plan, kb)
+    report = await gemini.generate_report(plan, kb, template_type, feedback)
     
     # Inverted Citation Engine: Append markdown reference links
     logger.info("Writing... appending inverted citations.")

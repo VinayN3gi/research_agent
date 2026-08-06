@@ -3,7 +3,7 @@ import json
 import asyncio
 from google import genai
 from google.genai import types
-from models import ResearchPlan, ExtractionResult, ReflectionResult, KnowledgeBase, Source, Evidence
+from models import ResearchPlan, ExtractionResult, ReflectionResult, KnowledgeBase, Document, Evidence
 from config import GEMINI_API_KEY
 from utils.logger import get_logger
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
@@ -77,22 +77,22 @@ async def generate_followup_plan(missing_topics: list[str]) -> list[str]:
             raise
 
 @retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3), reraise=True)
-async def extract_evidence(source: Source) -> ExtractionResult:
-    logger.info(f"Extracting evidence from: {source.url}")
+async def extract_evidence(doc: Document) -> ExtractionResult:
+    logger.info(f"Extracting evidence from: {doc.id}")
     client = get_client()
     
     if not client:
         return ExtractionResult(facts=[], statistics=[], quotes=[])
 
-    prompt = f"""You are a research extraction agent. Extract structured evidence from the following webpage content.
+    prompt = f"""You are a research extraction agent. Extract structured evidence from the following document content.
 Limit your extraction to MAXIMUM 10 facts, 5 statistics, and 3 quotes to avoid flooding the knowledge base.
 
-Page Title: {source.title}
-URL: {source.url}
-Domain: {source.domain}
+Document Title: {doc.title}
+Source Type: {doc.source_type}
+ID/URL: {doc.id}
 
 Content:
-{source.markdown[:40000]} # Cap text to avoid extreme context sizes on a single page
+{doc.text[:40000]} # Cap text to avoid extreme context sizes on a single page
 """
     async with gemini_semaphore:
         try:
@@ -107,13 +107,13 @@ Content:
             )
             result = ExtractionResult.model_validate_json(response.text)
             for fact in result.facts:
-                fact.url = source.url
-                fact.page_title = source.title
+                fact.url = doc.id
+                fact.page_title = doc.title
                 if not fact.source:
-                    fact.source = source.domain or source.url
+                    fact.source = doc.metadata.get("domain", doc.source_type)
             return result
         except Exception as e:
-            logger.error(f"Error in Gemini extract_evidence for {source.url}: {e}")
+            logger.error(f"Error in Gemini extract_evidence for {doc.id}: {e}")
             raise
 
 @retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3), reraise=True)
@@ -156,7 +156,7 @@ If missing information, list specific missing topics (e.g. "Pricing details", "P
             raise
 
 @retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3), reraise=True)
-async def generate_report(plan: ResearchPlan, kb: KnowledgeBase) -> str:
+async def generate_report(plan: ResearchPlan, kb: KnowledgeBase, template_type: str = "General Report", feedback: str = None) -> str:
     logger.info("Generating final report from Knowledge Base")
     client = get_client()
     
@@ -170,6 +170,7 @@ async def generate_report(plan: ResearchPlan, kb: KnowledgeBase) -> str:
     formatted_quotes = "\n".join([f"- {q}" for q in kb.quotes])
 
     prompt = f"""You are a deep research expert. Write a detailed, comprehensive report.
+Template Style: {template_type}
 
 Goal: {plan.goal}
 Target Sections: {plan.sections}
@@ -188,7 +189,24 @@ Cite your sources clearly using the provided Source IDs like this: [1] or [2, 3]
 {formatted_quotes}
 
 Return ONLY Markdown text. Do NOT add a References or Bibliography section yourself, it will be generated automatically.
+
+If you are presenting comparisons, trends, or structured numeric data, you MUST include a JSON chart representation wrapped in triple backticks with the language "chart".
+Format exactly like this:
+```chart
+{
+  "chart": {
+    "type": "bar",
+    "title": "Chart Title",
+    "labels": ["Item A", "Item B"],
+    "values": [10, 20]
+  }
+}
+```
+Supported types are: "bar", "line", "pie".
 """
+    if feedback:
+        prompt += f"\n\nPREVIOUS REVIEW FEEDBACK TO FIX IN THIS REWRITE:\n{feedback}\n"
+
     async with gemini_semaphore:
         try:
             response = await client.aio.models.generate_content(
