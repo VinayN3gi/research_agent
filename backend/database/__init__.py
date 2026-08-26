@@ -1,4 +1,4 @@
-from database.connection import Base
+from database.connection import Base, engine, get_db
 from database.models.user import User
 from database.models.project import Project
 from database.models.research_run import ResearchRun

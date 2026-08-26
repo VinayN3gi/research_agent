@@ -118,13 +118,13 @@ async def run_research(job_id: str, query: str, project_id: Optional[str] = None
                     
                 try:
                     if tsk.tool == "web_search":
-                        urls = await search.search_duckduckgo(tsk.query)
+                        urls = await search.search([tsk.query])
                         new_urls.extend([u for u in urls if u not in kb.sources])
                     elif tsk.tool == "github":
-                        urls = await search.search_duckduckgo(f"site:github.com {tsk.query}")
+                        urls = await search.search([f"site:github.com {tsk.query}"])
                         new_urls.extend([u for u in urls if u not in kb.sources])
                     elif tsk.tool == "reddit":
-                        urls = await search.search_duckduckgo(f"site:reddit.com {tsk.query}")
+                        urls = await search.search([f"site:reddit.com {tsk.query}"])
                         new_urls.extend([u for u in urls if u not in kb.sources])
                     else:
                         try:
@@ -176,7 +176,7 @@ async def run_research(job_id: str, query: str, project_id: Optional[str] = None
                             logger.error(f"[{job_id}] Failed to parse {fpath}: {e}")
 
             pages_read_count += len(sources)
-            kb.sources.extend([s.url for s in sources])
+            kb.sources.extend([s.id for s in sources])
             
             # Save Sources to DB
             from services.reader import QUALITY_SCORES
@@ -198,8 +198,8 @@ async def run_research(job_id: str, query: str, project_id: Optional[str] = None
             # 4. Extract
             await emit_event(job_id, "status", {"stage": "extracting", "iteration": iteration, "current": 0, "total": len(sources), "message": "Extracting facts concurrently..."})
             
-            for doc in sources:
-                await emit_event(job_id, "status", {"stage": "extracting", "iteration": iteration, "message": f"Extracting insights from: {doc.title}"})
+            for i, doc in enumerate(sources):
+                await emit_event(job_id, "status", {"stage": "extracting", "iteration": iteration, "current": i + 1, "total": len(sources), "message": f"Extracting insights from: {doc.title}"})
                 extraction = await extractor.extract_evidence(doc)
                 
                 # Save Evidence to DB

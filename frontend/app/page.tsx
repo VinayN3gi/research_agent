@@ -51,7 +51,9 @@ export default function Home() {
 
           if (data.iteration) setIteration(data.iteration);
           if (data.current !== undefined) setCurrentProgress(data.current);
+          else setCurrentProgress(0);
           if (data.total !== undefined) setTotalProgress(data.total);
+          else setTotalProgress(0);
         } else if (type === "plan") {
           // Do something with plan if needed
         } else if (type === "reflection") {

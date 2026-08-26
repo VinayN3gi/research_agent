@@ -1,5 +1,5 @@
 from models import Evidence
-from services import gemini
+from services import cleaner
 
 async def deduplicate_facts(facts: list[Evidence]) -> list[Evidence]:
     """
@@ -17,4 +17,4 @@ async def deduplicate_facts(facts: list[Evidence]) -> list[Evidence]:
             unique_facts_string.append(fact)
             
     # Then use LLM for semantic dedup
-    return await gemini.deduplicate_claims(unique_facts_string)
+    return await cleaner.deduplicate_claims(unique_facts_string)
