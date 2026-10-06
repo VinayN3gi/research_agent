@@ -9,14 +9,14 @@ async def extract_evidence(doc: Document) -> ExtractionResult:
     provider = registry.get("gemini-flash")
     
     prompt = f"""You are a research extraction agent. Extract structured evidence from the following document content.
-Limit your extraction to MAXIMUM 10 facts, 5 statistics, and 3 quotes to avoid flooding the knowledge base.
+Limit your extraction to MAXIMUM 5 facts, 2 statistics, and 1 quote to avoid flooding the knowledge base.
 
 Document Title: {doc.title}
 Source Type: {doc.source_type}
 ID/URL: {doc.id}
 
 Content:
-{doc.text[:40000]}
+{doc.text[:15000]}
 """
     result = await provider.structured(prompt, ExtractionResult)
     

@@ -26,7 +26,7 @@ from repositories import (
 
 logger = get_logger("orchestrator")
 
-MAX_ITERATIONS = 3
+MAX_ITERATIONS = 1
 
 # Simple in-memory event queues for SSE
 # job_id -> asyncio.Queue
@@ -81,7 +81,7 @@ async def run_research(job_id: str, query: str, project_id: Optional[str] = None
             iteration_start = checkpoint["iteration"] + 1
             kb = checkpoint["kb"]
             plan = checkpoint["plan"]
-            current_queries = plan.tasks[:5]
+            current_queries = plan.tasks[:2]
             logger.info(f"[{job_id}] Resuming from checkpoint at iteration {checkpoint['iteration']}")
             await emit_event(job_id, "status", {"stage": "planning", "message": f"Resuming from checkpoint (Iteration {iteration_start})..."})
             await emit_event(job_id, "plan", plan.model_dump())
@@ -95,7 +95,7 @@ async def run_research(job_id: str, query: str, project_id: Optional[str] = None
                 kb = KnowledgeBase()
             tokens_used += 1500 # Rough estimate
             await emit_event(job_id, "plan", plan.model_dump())
-            current_queries = plan.tasks[:5]
+            current_queries = plan.tasks[:2]
         
         actual_iterations = 0
         
@@ -245,7 +245,7 @@ async def run_research(job_id: str, query: str, project_id: Optional[str] = None
             # 7. Follow-up plan if not enough info
             await emit_event(job_id, "status", {"stage": "planning", "iteration": iteration, "message": "Generating follow-up queries..."})
             followup_queries = await planner.create_followup_queries(ref_result.missing_topics)
-            current_queries = followup_queries[:5]
+            current_queries = followup_queries[:2]
             
             # Save checkpoint
             CheckpointManager.save(job_id, iteration, kb, plan)
@@ -253,7 +253,7 @@ async def run_research(job_id: str, query: str, project_id: Optional[str] = None
         # 8. Write and Review (Debate) Loop
         report_content = await writer.generate_report(plan, kb, template_type)
         
-        for write_attempt in range(1, 3):
+        for write_attempt in range(1, 2):
             feedback_history = []
             
             # Evidence Validator

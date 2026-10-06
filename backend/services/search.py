@@ -32,7 +32,7 @@ async def _fetch_search(query: str, client: httpx.AsyncClient) -> list[str]:
                 "api_key": TAVILY_API_KEY,
                 "query": query,
                 "search_depth": "basic",
-                "max_results": 5
+                "max_results": 2
             },
             timeout=15.0
         )
@@ -70,7 +70,7 @@ async def search(queries: list[str]) -> list[str]:
             else:
                 unique_urls.update(result)
     
-    # Keep up to 20 URLs
-    final_urls = list(unique_urls)[:20]
+    # Keep up to 5 URLs to save API limits
+    final_urls = list(unique_urls)[:5]
     logger.info(f"Searching... Found {len(final_urls)} unique URLs.")
     return final_urls
